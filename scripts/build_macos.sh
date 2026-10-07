@@ -20,11 +20,22 @@ codesign --verify --deep --strict "dist/TG WS Proxy Mac.app"
 "dist/TG WS Proxy Mac.app/Contents/MacOS/TgWsProxyMac" --version
 
 DMG_STAGE="$(mktemp -d "$PROJECT_ROOT/dist/dmg.XXXXXX")"
-trap 'rm -rf "$DMG_STAGE"' EXIT
+DMG_ERROR_LOG="$(mktemp "$PROJECT_ROOT/dist/dmg-error.XXXXXX")"
+trap 'rm -rf "$DMG_STAGE"; rm -f "$DMG_ERROR_LOG"' EXIT
 cp -R "dist/TG WS Proxy Mac.app" "$DMG_STAGE/"
 ln -s /Applications "$DMG_STAGE/Applications"
 DMG_PATH="dist/TgWsProxyMac_${TG_WS_TARGET_ARCH}.dmg"
-hdiutil create -volname "TG WS Proxy Mac" -srcfolder "$DMG_STAGE" -ov -format UDZO -fs HFS+ "$DMG_PATH"
+for ATTEMPT in 1 2 3; do
+  if hdiutil create -volname "TG WS Proxy Mac" -srcfolder "$DMG_STAGE" -ov -format UDZO -fs HFS+ "$DMG_PATH" 2>"$DMG_ERROR_LOG"; then
+    break
+  fi
+  cat "$DMG_ERROR_LOG" >&2
+  if [[ "$(cat "$DMG_ERROR_LOG")" != *"Resource busy"* || "$ATTEMPT" -eq 3 ]]; then
+    exit 1
+  fi
+  rm -f "$DMG_PATH"
+  sleep 2
+done
 hdiutil verify "$DMG_PATH"
 (cd dist && shasum -a 256 "${DMG_PATH##*/}" > "${DMG_PATH##*/}.sha256")
 echo "Built $DMG_PATH"

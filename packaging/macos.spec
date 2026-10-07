@@ -1,97 +1,58 @@
 # -*- mode: python ; coding: utf-8 -*-
-
-import sys
 import os
+import platform
+import re
+from pathlib import Path
 
-block_cipher = None
+project_root = Path(SPECPATH).parent
+version_source = (project_root / 'proxy' / '__init__.py').read_text()
+version = re.search(r'__version__ = "([^"]+)"', version_source).group(1)
+target_arch = os.environ.get('TG_WS_TARGET_ARCH', platform.machine())
 
 a = Analysis(
-    [os.path.join(os.path.dirname(SPEC), os.pardir, 'macos.py')],
-    pathex=[],
+    [str(project_root / 'macos.py')],
+    pathex=[str(project_root)],
     binaries=[],
     datas=[],
     hiddenimports=[
-        'rumps',
-        'objc',
-        'Foundation',
-        'AppKit',
-        'PyObjCTools',
-        'PyObjCTools.AppHelper',
+        'rumps', 'objc', 'Foundation', 'AppKit', 'PyObjCTools.AppHelper',
         'cryptography.hazmat.primitives.ciphers',
-        'cryptography.hazmat.primitives.ciphers.algorithms',
-        'cryptography.hazmat.primitives.ciphers.modes',
         'cryptography.hazmat.backends.openssl',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[
-        'PIL._avif',
-        'PIL._webp',
-        'PIL._imagingtk',
-    ],
+    excludes=['PIL._avif', 'PIL._webp', 'PIL._imagingtk', 'tkinter'],
     noarchive=False,
-    cipher=block_cipher,
 )
-
-_PIL_EXCLUDE_PYDS = {
-    '_avif', '_webp', '_imagingtk',
-    'FpxImagePlugin', 'MicImagePlugin',
-}
-a.binaries = [
-    (name, path, typ)
-    for name, path, typ in a.binaries
-    if not any(ex in name for ex in _PIL_EXCLUDE_PYDS)
-]
-
-icon_path = os.path.join(os.path.dirname(SPEC), os.pardir, 'icon.icns')
-if not os.path.exists(icon_path):
-    icon_path = None
-
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
-
+pyz = PYZ(a.pure)
 exe = EXE(
-    pyz,
-    a.scripts,
-    [],
+    pyz, a.scripts, [],
     exclude_binaries=True,
-    name='TgWsProxy',
+    name='TgWsProxyMac',
     debug=False,
-    bootloader_ignore_signals=False,
     strip=False,
     upx=False,
     console=False,
     argv_emulation=False,
-    target_arch='universal2',
+    target_arch=target_arch,
     codesign_identity=None,
     entitlements_file=None,
 )
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name='TgWsProxy',
-)
-
+coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='TgWsProxyMac')
 app = BUNDLE(
     coll,
-    name='TG WS Proxy.app',
-    icon=icon_path,
-    bundle_identifier='com.tgwsproxy.app',
+    name='TG WS Proxy Mac.app',
+    icon=str(project_root / 'assets' / 'icon.icns'),
+    bundle_identifier='com.github.f4rceful.tgwsproxymac',
     info_plist={
-        'CFBundleName': 'TG WS Proxy',
-        'CFBundleDisplayName': 'TG WS Proxy',
-        'CFBundleShortVersionString': '1.0.0',
-        'CFBundleVersion': '1.0.0',
-        'LSMinimumSystemVersion': '10.15',
+        'CFBundleName': 'TG WS Proxy Mac',
+        'CFBundleDisplayName': 'TG WS Proxy Mac',
+        'CFBundleShortVersionString': version,
+        'CFBundleVersion': version,
+        'LSMinimumSystemVersion': '11.0',
         'LSUIElement': True,
         'NSHighResolutionCapable': True,
-        'NSAppleEventsUsageDescription':
-            'TG WS Proxy needs to display dialogs.',
+        'NSAppleEventsUsageDescription': 'TG WS Proxy Mac needs to display dialogs.',
     },
 )

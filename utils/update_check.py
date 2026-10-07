@@ -7,8 +7,6 @@
 from __future__ import annotations
 
 import json
-import os
-import sys
 import time
 from itertools import zip_longest
 from pathlib import Path
@@ -17,9 +15,9 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request
 from proxy.utils import build_github_opener
 
-REPO = "Flowseal/tg-ws-proxy"
+REPO = "f4rceful/tg-ws-proxy-mac"
 RELEASES_LATEST_API = f"https://api.github.com/repos/{REPO}/releases/latest"
-RELEASES_PAGE_URL = f"https://github.com/{REPO}/releases/latest"
+RELEASES_PAGE_URL = f"https://github.com/{REPO}/releases"
 
 # Не чаще одного полного запроса к API в час (без учёта 304 с тем же ETag).
 _MIN_FETCH_INTERVAL_SEC = 3600.0
@@ -31,19 +29,12 @@ _state: Dict[str, Any] = {
     "latest": None,
     "html_url": None,
     "error": None,
-    "assets": [],
 }
 
 
 def _cache_file() -> Optional[Path]:
     try:
-        if sys.platform == "win32":
-            root = Path(os.environ.get("APPDATA", str(Path.home()))) / "TgWsProxy"
-        elif sys.platform == "darwin":
-            root = Path.home() / "Library/Application Support/TgWsProxy"
-        else:
-            xdg = os.environ.get("XDG_CONFIG_HOME")
-            root = (Path(xdg).expanduser() if xdg else Path.home() / ".config") / "TgWsProxy"
+        root = Path.home() / "Library/Application Support/TgWsProxyMac"
         root.mkdir(parents=True, exist_ok=True)
         return root / ".update_check_cache.json"
     except OSError:
@@ -164,7 +155,6 @@ def run_check(current_version: str) -> None:
         tag = (cache.get("tag_name") or "").strip()
         if tag:
             _apply_release_tag(tag, cache.get("html_url") or "", current_version)
-            _state["assets"] = cache.get("assets") or []
             return
         err = cache.get("last_error")
         _state["error"] = (
@@ -184,7 +174,6 @@ def run_check(current_version: str) -> None:
             tag = (cache.get("tag_name") or "").strip()
             url = (cache.get("html_url") or "").strip() or RELEASES_PAGE_URL
             _apply_release_tag(tag, url, current_version)
-            _state["assets"] = cache.get("assets") or []
             if new_etag:
                 cache["etag"] = new_etag
             _save_cache(cache_path, cache)
@@ -204,13 +193,6 @@ def run_check(current_version: str) -> None:
             cache["etag"] = new_etag
         cache["tag_name"] = tag
         cache["html_url"] = html_url
-        assets = [
-            {"name": a.get("name", ""), "url": a.get("browser_download_url", ""), "digest": a.get("digest", "")}
-            for a in (data.get("assets") or [])
-            if a.get("name") and a.get("browser_download_url")
-        ]
-        _state["assets"] = assets
-        cache["assets"] = assets
         cache.pop("last_error", None)
         _save_cache(cache_path, cache)
     except (HTTPError, URLError, OSError, TimeoutError, ValueError, json.JSONDecodeError) as e:
@@ -232,45 +214,3 @@ def run_check(current_version: str) -> None:
 def get_status() -> Dict[str, Any]:
     """Снимок состояния после run_check (для подписей в настройках)."""
     return dict(_state)
-
-
-def get_update_asset(exe_path: Path) -> Optional[Tuple[str, str]]:
-    assets = _state.get("assets") or []
-    if not assets:
-        return None
-
-    # Try SHA256 match against release asset digests
-    try:
-        import hashlib
-        h = hashlib.sha256()
-        with open(exe_path, "rb") as f:
-            while True:
-                chunk = f.read(65536)
-                if not chunk:
-                    break
-                h.update(chunk)
-        exe_sha = h.hexdigest().lower()
-        for a in assets:
-            d = (a.get("digest") or "").lower()
-            if d.startswith("sha256:") and d[7:] == exe_sha:
-                return a["url"], a["name"]
-    except Exception:
-        pass
-
-    # Fallback
-    import struct
-    is_64 = struct.calcsize("P") * 8 == 64
-    try:
-        is_modern = sys.getwindowsversion().major >= 10
-    except Exception:
-        is_modern = True
-    if is_modern:
-        name = "TgWsProxy_windows.exe"
-    elif is_64:
-        name = "TgWsProxy_windows_7_64bit.exe"
-    else:
-        name = "TgWsProxy_windows_7_32bit.exe"
-    for a in assets:
-        if a.get("name") == name:
-            return a["url"], a["name"]
-    return None

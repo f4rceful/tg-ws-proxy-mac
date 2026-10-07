@@ -15,20 +15,6 @@ body:
     validations:
       required: true
 
-  - type: dropdown
-    id: platform
-    attributes:
-      label: Для какой платформы актуально?
-      description: Выберите платформу, если предложение связано с конкретной ОС
-      options:
-        - Все платформы
-        - Windows
-        - macOS
-        - Linux
-        - Другое
-    validations:
-      required: true
-
   - type: textarea
     id: context
     attributes:

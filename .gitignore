@@ -20,8 +20,8 @@ venv/
 *.swo
 
 # OS
-Thumbs.db
-Desktop.ini
 .DS_Store
 
-/icon.icns
+
+# Build dependencies
+wheelhouse/

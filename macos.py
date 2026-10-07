@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import threading
 import time
 import webbrowser
-from pathlib import Path
 from typing import Optional
 
 try:
@@ -19,18 +17,13 @@ try:
 except ImportError:
     Image = ImageDraw = ImageFont = None
 
-try:
-    import pyperclip
-except ImportError:
-    pyperclip = None
-
 from proxy import __version__, get_link_host, parse_dc_ip_list, proxy_config, coerce_domain_list
 from proxy.tg_ws_proxy import _run
 
-from utils.tray_common import (
-    APP_DIR, APP_NAME, DEFAULT_CONFIG, FIRST_RUN_MARKER, IPV6_WARN_MARKER,
+from utils.macos_common import (
+    APP_DIR, DEFAULT_CONFIG, FIRST_RUN_MARKER, IPV6_WARN_MARKER,
     LOG_FILE, acquire_lock, apply_proxy_config, ensure_dirs, load_config,
-    log, release_lock, save_config, setup_logging, stop_proxy, tg_proxy_url,
+    log, release_lock, save_config, setup_logging, tg_proxy_url,
 )
 
 MENUBAR_ICON_PATH = APP_DIR / "menubar_icon.png"
@@ -41,7 +34,7 @@ _app: Optional[object] = None
 _config: dict = {}
 _exiting: bool = False
 
-_CFWORKER_HELP_URL = "https://github.com/Flowseal/tg-ws-proxy/blob/main/docs/CfWorker.md"
+_CFWORKER_HELP_URL = "https://github.com/f4rceful/tg-ws-proxy-mac/blob/main/docs/CfWorker.md"
 
 # osascript dialogs
 
@@ -55,25 +48,25 @@ def _osascript(script: str) -> str:
     return r.stdout.strip()
 
 
-def _show_error(text: str, title: str = "TG WS Proxy") -> None:
+def _show_error(text: str, title: str = "TG WS Proxy Mac") -> None:
     _osascript(
         f'display dialog "{_esc(text)}" with title "{_esc(title)}" '
         f'buttons {{"OK"}} default button "OK" with icon stop'
     )
 
 
-def _show_info(text: str, title: str = "TG WS Proxy") -> None:
+def _show_info(text: str, title: str = "TG WS Proxy Mac") -> None:
     _osascript(
         f'display dialog "{_esc(text)}" with title "{_esc(title)}" '
         f'buttons {{"OK"}} default button "OK" with icon note'
     )
 
 
-def _ask_yes_no(text: str, title: str = "TG WS Proxy") -> bool:
+def _ask_yes_no(text: str, title: str = "TG WS Proxy Mac") -> bool:
     return _ask_yes_no_close(text, title) is True
 
 
-def _ask_yes_no_close(text: str, title: str = "TG WS Proxy") -> Optional[bool]:
+def _ask_yes_no_close(text: str, title: str = "TG WS Proxy Mac") -> Optional[bool]:
     r = subprocess.run(
         [
             "osascript", "-e",
@@ -94,7 +87,7 @@ def _ask_yes_no_close(text: str, title: str = "TG WS Proxy") -> Optional[bool]:
     return None
 
 
-def _osascript_input(prompt: str, default: str, title: str = "TG WS Proxy") -> Optional[str]:
+def _osascript_input(prompt: str, default: str, title: str = "TG WS Proxy Mac") -> Optional[str]:
     r = subprocess.run(
         [
             "osascript", "-e",
@@ -117,7 +110,7 @@ def _ask_cfworker_domain(default: str) -> Optional[str]:
         script = (
             f'set d to display dialog "{_esc("Cloudflare Worker домены через запятую (например, name.account.workers.dev):")}" '
             f'default answer "{_esc(value)}" '
-            f'with title "TG WS Proxy" '
+            f'with title "TG WS Proxy Mac" '
             f'buttons {{"Закрыть", "?", "OK"}} '
             f'default button "OK" cancel button "Закрыть"\n'
             f'return (button returned of d) & "\\n" & (text returned of d)'
@@ -246,10 +239,7 @@ def _on_open_in_telegram(_=None) -> None:
         except Exception:
             log.info("Browser open failed, copying to clipboard")
             try:
-                if pyperclip:
-                    pyperclip.copy(url)
-                else:
-                    subprocess.run(["pbcopy"], input=url.encode(), check=True)
+                subprocess.run(["pbcopy"], input=url.encode(), check=True)
                 _show_info(
                     "Не удалось открыть Telegram автоматически.\n\n"
                     f"Ссылка скопирована в буфер обмена:\n{url}"
@@ -263,10 +253,7 @@ def _on_copy_link(_=None) -> None:
     url = tg_proxy_url(_config)
     log.info("Copying link: %s", url)
     try:
-        if pyperclip:
-            pyperclip.copy(url)
-        else:
-            subprocess.run(["pbcopy"], input=url.encode(), check=True)
+        subprocess.run(["pbcopy"], input=url.encode(), check=True)
     except Exception as exc:
         log.error("Clipboard copy failed: %s", exc)
         _show_error(f"Не удалось скопировать ссылку:\n{exc}")
@@ -333,7 +320,7 @@ def _maybe_notify_update_async() -> None:
             ver = st.get("latest") or "?"
             if _ask_yes_no(
                 f"Доступна новая версия: {ver}\n\nОткрыть страницу релиза в браузере?",
-                "TG WS Proxy — обновление",
+                "TG WS Proxy Mac — обновление",
             ):
                 webbrowser.open(url)
         except Exception as exc:
@@ -498,7 +485,7 @@ def _show_first_run() -> None:
     )
 
     FIRST_RUN_MARKER.touch()
-    if _ask_yes_no(text, "TG WS Proxy"):
+    if _ask_yes_no(text, "TG WS Proxy Mac"):
         _on_open_in_telegram()
 
 
@@ -569,7 +556,7 @@ class TgWsProxyApp(_TgWsProxyAppBase):
         self._version_item = rumps.MenuItem(f"Версия {__version__}", callback=lambda _: None)
 
         super().__init__(
-            "TG WS Proxy",
+            "TG WS Proxy Mac",
             icon=icon_path,
             template=False,
             quit_button="Выход",
@@ -614,7 +601,7 @@ def run_menubar() -> None:
         _config.get("verbose", False),
         log_max_mb=_config.get("log_max_mb", DEFAULT_CONFIG["log_max_mb"]),
     )
-    log.info("TG WS Proxy версия %s, menubar app starting", __version__)
+    log.info("TG WS Proxy Mac версия %s, menubar app starting", __version__)
     log.info("Config: %s", _config)
     log.info("Log file: %s", LOG_FILE)
 
@@ -642,6 +629,9 @@ def run_menubar() -> None:
 
 
 def main() -> None:
+    if "--version" in sys.argv:
+        print(__version__)
+        return
     if not acquire_lock():
         _show_info("Приложение уже запущено.")
         return

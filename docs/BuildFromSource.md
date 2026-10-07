@@ -9,28 +9,9 @@ pip install -e .
 tg-ws-proxy
 ```
 
-## Tray-приложение по ОС
+## Приложение в строке меню macOS
 
-### Windows 7/10+
-
-```bash
-pip install -e .
-tg-ws-proxy-tray-win
-```
-
-### macOS
-
-```bash
-pip install -e .
-tg-ws-proxy-tray-macos
-```
-
-### Linux
-
-```bash
-pip install -e .
-tg-ws-proxy-tray-linux
-```
+Для запуска приложения и сборки DMG см. [инструкцию для macOS](./Development.macos.md).
 
 ## Консольный режим из исходников
 

@@ -6,4 +6,4 @@
 *.toml text
 *.txt text
 
-*.ico binary
+*.icns binary

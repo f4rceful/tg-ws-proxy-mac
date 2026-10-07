@@ -40,6 +40,7 @@ packages = ["proxy", "utils"]
 [tool.hatch.build.force-include]
 "macos.py" = "macos.py"
 "native_ui.py" = "native_ui.py"
+"assets/tray-icon.png" = "assets/tray-icon.png"
 
 [tool.hatch.version]
 path = "proxy/__init__.py"

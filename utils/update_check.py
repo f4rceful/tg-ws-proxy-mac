@@ -29,6 +29,7 @@ _state: Dict[str, Any] = {
     "latest": None,
     "html_url": None,
     "error": None,
+    "assets": [],
 }
 
 
@@ -140,21 +141,31 @@ def fetch_latest_release(
         raise
 
 
-def run_check(current_version: str) -> None:
+def _extract_assets(data: Optional[dict]) -> list:
+    return [
+        {"name": asset["name"], "url": asset["browser_download_url"], "digest": asset.get("digest") or ""}
+        for asset in (data or {}).get("assets", [])
+        if isinstance(asset, dict) and asset.get("name") and asset.get("browser_download_url")
+    ]
+
+
+def run_check(current_version: str, force: bool = False) -> None:
     """Запрашивает последний релиз и обновляет внутреннее состояние."""
     global _state
     _state["checked"] = True
     _state["error"] = None
+    _state["assets"] = []
 
     cache_path = _cache_file()
     cache = _load_cache(cache_path)
     now = time.time()
     last_attempt = float(cache.get("last_attempt_at") or 0)
 
-    if last_attempt and (now - last_attempt) < _MIN_FETCH_INTERVAL_SEC:
+    if not force and last_attempt and (now - last_attempt) < _MIN_FETCH_INTERVAL_SEC:
         tag = (cache.get("tag_name") or "").strip()
         if tag:
             _apply_release_tag(tag, cache.get("html_url") or "", current_version)
+            _state["assets"] = cache.get("assets") or []
             return
         err = cache.get("last_error")
         _state["error"] = (
@@ -174,6 +185,7 @@ def run_check(current_version: str) -> None:
             tag = (cache.get("tag_name") or "").strip()
             url = (cache.get("html_url") or "").strip() or RELEASES_PAGE_URL
             _apply_release_tag(tag, url, current_version)
+            _state["assets"] = cache.get("assets") or []
             if new_etag:
                 cache["etag"] = new_etag
             _save_cache(cache_path, cache)
@@ -193,6 +205,8 @@ def run_check(current_version: str) -> None:
             cache["etag"] = new_etag
         cache["tag_name"] = tag
         cache["html_url"] = html_url
+        _state["assets"] = _extract_assets(data)
+        cache["assets"] = _state["assets"]
         cache.pop("last_error", None)
         _save_cache(cache_path, cache)
     except (HTTPError, URLError, OSError, TimeoutError, ValueError, json.JSONDecodeError) as e:
@@ -202,6 +216,8 @@ def run_check(current_version: str) -> None:
             msg = (
                 "GitHub API вернул 403 (лимит или доступ). Повторите позже."
             )
+        elif isinstance(e, HTTPError) and e.code == 404:
+            msg = "В этом форке пока нет опубликованных релизов."
         cache["last_error"] = msg
         _save_cache(cache_path, cache)
         _state["error"] = msg

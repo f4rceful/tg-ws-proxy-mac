@@ -17,6 +17,9 @@ from utils.macos_common import (
 )
 from utils.proxy_service import ProxyService
 from utils.update_check import RELEASES_PAGE_URL, get_status, run_check
+from utils import macos_integration as mac_integration
+from utils.i18n import t
+from proxy.utils import build_github_opener
 
 
 class MacApp:
@@ -24,9 +27,13 @@ class MacApp:
         self.preview = preview
         self.settings_preview = settings_preview
         self.first_run_pending = False
+        self.bundle = None if preview else mac_integration.app_bundle()
+        self.update_status = {}
+        self.check_pending = False
         self.config = deepcopy(DEFAULT_CONFIG)
         if preview:
             self.config['secret'] = '0' * 32
+            self.config['language'] = F.NSBundle.mainBundle().objectForInfoDictionaryKey_('TGWSPreviewLanguage') or 'auto'
         self.ui = NativeUI.alloc().init()
         self.disk = ThreadPoolExecutor(max_workers=1, thread_name_prefix='settings')
         self.background = ThreadPoolExecutor(max_workers=1, thread_name_prefix='updates')
@@ -37,12 +44,16 @@ class MacApp:
             'save_preferences': self.save_preferences,
             'release': lambda: self.open_url(RELEASES_PAGE_URL),
             'help': lambda: self.open_url('https://github.com/f4rceful/tg-ws-proxy-mac/blob/main/docs/CfWorker.md'),
+            'update': self.request_update,
+            'check_updates': lambda: self.schedule_check(True),
             'quit': self.quit,
-        }, self.config)
+        }, self.config, startup_available=preview or self.bundle is not None)
 
     def boot(self):
         if self.preview:
             self.ui.update_state('running')
+            if F.NSBundle.mainBundle().objectForInfoDictionaryKey_('TGWSPreviewUpdate'):
+                self._checked({'has_update': True, 'latest': '0.4.0'}, False)
             if self.settings_preview:
                 self.ui.settings_(None)
             else:
@@ -51,6 +62,12 @@ class MacApp:
         def load():
             ensure_dirs()
             config = load_config()
+            if self.bundle:
+                config['autostart'] = mac_integration.startup_enabled(self.bundle)
+                try:
+                    mac_integration.cleanup_old_updates(self.bundle)
+                except OSError:
+                    log.exception('Could not clean old update backups')
             save_config(config)
             setup_logging(config.get('verbose', False), config.get('log_max_mb', 5))
             first_run = not FIRST_RUN_MARKER.exists()
@@ -63,7 +80,7 @@ class MacApp:
         try:
             config, first_run = future.result()
         except Exception as exc:
-            AppHelper.callAfter(self.ui.show_message, 'Не удалось открыть настройки', str(exc))
+            AppHelper.callAfter(self.ui.show_message, t('Не удалось открыть настройки'), str(exc))
             return
         AppHelper.callAfter(self._finish_load, config, first_run)
 
@@ -73,7 +90,7 @@ class MacApp:
         self.first_run_pending = first_run
         self.restart()
         if config.get('check_updates', True):
-            self.background.submit(self.check_updates)
+            self.schedule_check()
 
     def _state_changed(self, state, detail):
         AppHelper.callAfter(self._show_state, state, detail)
@@ -99,7 +116,7 @@ class MacApp:
             return
         if not self.open_url(tg_proxy_url(self.config)):
             self.copy_link()
-            self.ui.show_message('Ссылка скопирована', 'Откройте Telegram Desktop, вставьте ссылку в «Избранное» и нажмите на неё.')
+            self.ui.show_message(t('Ссылка скопирована'), 'Откройте Telegram Desktop, вставьте ссылку в «Избранное» и нажмите на неё.')
 
     def copy_link(self):
         pasteboard = A.NSPasteboard.generalPasteboard()
@@ -110,7 +127,7 @@ class MacApp:
         if LOG_FILE.exists():
             A.NSWorkspace.sharedWorkspace().openURL_(F.NSURL.fileURLWithPath_(str(LOG_FILE)))
         else:
-            self.ui.show_message('Журнал пока пуст', 'Записи появятся после запуска прокси.')
+            self.ui.show_message(t('Журнал пока пуст'), 'Записи появятся после запуска прокси.')
 
     def save(self, config):
         if self.preview:
@@ -118,7 +135,21 @@ class MacApp:
             self.ui.update_config(config)
             self.ui.settings_saved()
             return
-        self.disk.submit(save_config, config).add_done_callback(lambda future: self._saved(future, config, True))
+        self.disk.submit(self._persist_settings, config).add_done_callback(lambda future: self._saved(future, config, True))
+
+    def _persist_settings(self, config):
+        previous = mac_integration.startup_enabled(self.bundle) if self.bundle else False
+        if self.bundle:
+            try:
+                mac_integration.set_startup(self.bundle, bool(config.get('autostart')))
+            except (ValueError, OSError) as exc:
+                raise ValueError(t('Не удалось изменить автозапуск: {error}', error=t(str(exc)))) from exc
+        try:
+            save_config(config)
+        except Exception:
+            if self.bundle:
+                mac_integration.set_startup(self.bundle, previous)
+            raise
 
     def save_preferences(self, config):
         if self.preview:
@@ -131,7 +162,7 @@ class MacApp:
         try:
             future.result()
         except Exception as exc:
-            AppHelper.callAfter(self.ui.save_failed, f'Не удалось сохранить: {exc}')
+            AppHelper.callAfter(self.ui.save_failed, t('Не удалось сохранить: {error}', error=t(str(exc))))
             return
         if settings_done:
             log.info('Settings saved')
@@ -148,15 +179,74 @@ class MacApp:
                     handler.maxBytes = max(32768, int(config.get('log_max_mb', 5) * 1024 * 1024))
             self.ui.settings_saved()
 
-    def check_updates(self):
+    def schedule_check(self, manual=False):
+        if self.check_pending or self.ui.update_busy or self.ui._quitting:
+            return
+        self.check_pending = True
+        self.ui.menu_items['check'].setEnabled_(False)
+        self.background.submit(self.check_updates, manual)
+
+    def check_updates(self, manual=False):
         try:
-            run_check(__version__)
+            run_check(__version__, force=manual)
             status = get_status()
-            if status.get('has_update'):
-                url = status.get('html_url') or RELEASES_PAGE_URL
-                AppHelper.callAfter(self.ui.show_message, 'Доступно обновление', f"Версия {status['latest']} готова к установке.", 'Открыть релиз', lambda: self.open_url(url))
-        except Exception:
+            AppHelper.callAfter(self._checked, status, manual)
+        except Exception as exc:
             log.exception('Update check failed')
+            AppHelper.callAfter(self._checked, {'error': t('Не удалось проверить обновления: {error}', error=str(exc))}, manual)
+
+    def _checked(self, status, manual):
+        if self.ui._quitting:
+            return
+        self.check_pending = False
+        self.ui.menu_items['check'].setEnabled_(not self.ui.update_busy)
+        self.update_status = status
+        self.ui.update_status(status)
+        if status.get('has_update'):
+            self.request_update()
+        elif manual:
+            message = status.get('error') or 'Обновлений пока нет.'
+            self.ui.show_message(t('Обновление'), t(message))
+
+    def request_update(self):
+        if self.ui.update_busy or self.ui._saving or self.ui._quitting or not self.update_status.get('has_update'):
+            return
+        if self.bundle is None and not self.preview:
+            self.open_url(self.update_status.get('html_url') or RELEASES_PAGE_URL)
+            return
+        self.ui.show_message(t('Доступно обновление'), t('Установить версию {version}? Прокси будет перезапущен. Предыдущая версия приложения будет сохранена для восстановления.', version=self.update_status['latest']), 'Установить', self._start_update)
+
+    def _start_update(self):
+        self.ui.show_update_progress()
+        if self.preview:
+            AppHelper.callLater(2.0, self.ui.update_progress, 'update.mac_preparing')
+            AppHelper.callLater(6.0, self.ui.finish_update_progress)
+            return
+        status = deepcopy(self.update_status)
+        def prepare():
+            return mac_integration.prepare_update(self.bundle, status, build_github_opener(), progress=lambda key: AppHelper.callAfter(self.ui.update_progress, key))
+        self.background.submit(prepare).add_done_callback(self._update_prepared)
+
+    def _update_prepared(self, future):
+        try:
+            work = future.result()
+        except Exception as exc:
+            log.exception('macOS update preparation failed')
+            AppHelper.callAfter(self._finish_update, None, str(exc))
+        else:
+            AppHelper.callAfter(self._finish_update, work, None)
+
+    def _finish_update(self, work, error):
+        self.ui.finish_update_progress()
+        if not error:
+            try:
+                mac_integration.launch_installer(self.bundle, work)
+            except OSError as exc:
+                error = str(exc)
+            else:
+                self.ui.quit_(None)
+                return
+        self.ui.show_message(t('Обновление'), t('Не удалось установить обновление: {error}', error=t(error)))
 
     def quit(self):
         if self.preview:

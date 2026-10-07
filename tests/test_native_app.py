@@ -97,9 +97,10 @@ class NativeWindowTests(unittest.TestCase):
             with self.subTest(glass=glass), patch.object(native_ui, 'has_liquid_glass', return_value=glass):
                 ui = NativeUI.alloc().init()
                 config = default_tray_config()
+                config['language'] = 'ru'
                 ui.configure(callbacks, config)
                 ui._build_menu()
-                self.assertEqual(list(ui.menu_items), ['telegram', 'copy', 'restart', 'settings', 'logs', 'release', 'updates', 'version', 'quit'])
+                self.assertEqual(list(ui.menu_items), ['telegram', 'copy', 'restart', 'settings', 'logs', 'release', 'update', 'check', 'updates', 'version', 'quit'])
                 self.assertEqual(ui.menu_items['telegram'].title(), 'Открыть в Telegram (127.0.0.1:1443)')
                 ui.settings_(None)
                 self.assertEqual(ui.step_field.stringValue(), config['host'])
@@ -162,3 +163,58 @@ class NativeWindowTests(unittest.TestCase):
                 window.close()
             application.disk.shutdown(wait=False)
             application.background.shutdown(wait=False)
+
+    def test_desktop_actions_keep_drafts_and_do_not_write_startup_before_save(self):
+        import AppKit as A
+        from native_ui import NativeUI
+        from utils.i18n import set_language
+        A.NSApplication.sharedApplication()
+        saved, quit_calls = [], []
+        callbacks = {key: (lambda *args: None) for key in ('started', 'telegram', 'copy', 'restart', 'logs', 'save', 'save_preferences', 'release', 'help', 'update', 'check_updates', 'quit')}
+        callbacks['save'] = saved.append
+        callbacks['quit'] = lambda: quit_calls.append(True)
+        ui = NativeUI.alloc().init()
+        config = default_tray_config()
+        config['language'] = 'ru'
+        ui.configure(callbacks, config, startup_available=True)
+        try:
+            ui._build_menu()
+            ui.update_state('running')
+            self.assertTrue(ui.menu_items['update'].isHidden())
+            self.assertTrue(ui.status_item.button().image().isTemplate())
+            ui.settings_(None)
+            ui.step_field.setStringValue_('127.0.0.2')
+            ui.update_status({'has_update': True, 'latest': '0.4.0'})
+            self.assertFalse(ui.menu_items['update'].isHidden())
+            self.assertEqual(ui.step_field.stringValue(), '127.0.0.2')
+            surface = ui.windows['settings'].contentView()
+            content = surface.contentView() if hasattr(surface, 'contentView') else surface
+            buttons = [view.title() for view in content.subviews() if isinstance(view, A.NSButton)]
+            self.assertIn('Обновить до 0.4.0', buttons)
+            ui.step_index = len(ui.steps) - 1
+            ui._render_step()
+            self.assertEqual(ui.steps[ui.step_index][0], 'autostart')
+            self.assertFalse(saved)
+            ui.answerYes_(None)
+            self.assertEqual(len(saved), 1)
+            self.assertTrue(saved[0]['autostart'])
+            self.assertFalse(config['autostart'])
+            ui.show_update_progress()
+            self.assertFalse(ui.menu_items['restart'].isEnabled())
+            self.assertFalse(ui.windowShouldClose_(ui.windows['progress']))
+            ui.quit_(None)
+            self.assertFalse(quit_calls)
+            self.assertFalse(ui._quitting)
+            ui.update_progress('update.mac_preparing')
+            self.assertIn('подготовка', ui.progress_label.stringValue())
+            ui.finish_update_progress()
+            self.assertTrue(ui.menu_items['restart'].isEnabled())
+            config['language'] = 'en'
+            ui.update_config(config)
+            self.assertEqual(ui.menu_items['settings'].title(), 'Settings...')
+            self.assertEqual(ui.menu_items['telegram'].title(), 'Open in Telegram (127.0.0.1:1443)')
+        finally:
+            set_language('ru')
+            for window in ui.windows.values():
+                window.close()
+            A.NSStatusBar.systemStatusBar().removeStatusItem_(ui.status_item)

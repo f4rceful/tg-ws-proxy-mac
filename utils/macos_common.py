@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
+import tempfile
 import logging
 import logging.handlers
 import sys
@@ -69,7 +71,13 @@ def load_config() -> dict:
 
 def save_config(cfg: dict) -> None:
     ensure_dirs()
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+    fd, name = tempfile.mkstemp(dir=APP_DIR, prefix='.config-')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            json.dump(cfg, stream, indent=2, ensure_ascii=False)
+        os.replace(name, CONFIG_FILE)
+    finally:
+        Path(name).unlink(missing_ok=True)
 
 
 def setup_logging(verbose: bool = False, log_max_mb: float = 5) -> None:

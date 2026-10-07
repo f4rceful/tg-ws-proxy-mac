@@ -13,7 +13,7 @@ a = Analysis(
     [str(project_root / 'macos.py')],
     pathex=[str(project_root)],
     binaries=[],
-    datas=[],
+    datas=[(str(project_root / 'assets' / 'tray-icon.png'), 'assets')],
     hiddenimports=[
         'objc', 'Foundation', 'AppKit', 'PyObjCTools.AppHelper',
         'cryptography.hazmat.primitives.ciphers',
@@ -53,6 +53,5 @@ app = BUNDLE(
         'LSMinimumSystemVersion': '11.0',
         'LSUIElement': True,
         'NSHighResolutionCapable': True,
-        'NSAppleEventsUsageDescription': 'TG WS Proxy Mac needs to display dialogs.',
     },
 )

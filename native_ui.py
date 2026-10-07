@@ -1,12 +1,11 @@
 """Native, nonmodal AppKit windows with Liquid Glass on macOS 26+."""
 from copy import deepcopy
-import os
 
 import AppKit as A
 import Foundation as F
 import objc
 
-from proxy import __version__
+from proxy import __version__, get_link_host
 from utils.settings import validate_settings
 
 
@@ -49,7 +48,7 @@ def glass_window(title, width, height):
     style = A.NSWindowStyleMaskTitled | A.NSWindowStyleMaskClosable | A.NSWindowStyleMaskMiniaturizable | A.NSWindowStyleMaskFullSizeContentView
     window = A.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(rect(0, 0, width, height), style, A.NSBackingStoreBuffered, False)
     window.setTitle_(title)
-    window.setTitleVisibility_(A.NSWindowTitleHidden)
+    window.setTitleVisibility_(A.NSWindowTitleVisible)
     window.setTitlebarAppearsTransparent_(True)
     window.setReleasedWhenClosed_(False)
     window.setOpaque_(False)
@@ -72,6 +71,19 @@ def glass_window(title, width, height):
 
 
 class NativeUI(F.NSObject):
+    # Keep the original dialog order and one decision per window.
+    STEPS = (
+        ('host', 'IP-адрес прокси:'),
+        ('port', 'Порт прокси:'),
+        ('secret', 'MTProto Secret (32 hex символа):'),
+        ('dc_ip', 'DC → IP маппинги (через запятую, формат DC:IP):\nНапример: 2:149.154.167.220, 4:149.154.167.220'),
+        ('verbose', 'Включить подробное логирование (verbose)?'),
+        ('advanced', 'Расширенные настройки (буфер KB, WS пул, лог MB):\nФормат: buf_kb,pool_size,log_max_mb'),
+        ('cfproxy', 'Включить Cloudflare Proxy (CfProxy)?'),
+        ('cfproxy_user_domain', 'Свои CF-домены через запятую (оставьте пустым для автоматического выбора):\nDNS записи kws1-kws5,kws203 должны указывать на IP датацентров Telegram через Cloudflare.'),
+        ('cfproxy_worker_domain', 'Cloudflare Worker домены через запятую (например, name.account.workers.dev):'),
+    )
+
     def init(self):
         self = objc.super(NativeUI, self).init()
         if self is None:
@@ -81,8 +93,9 @@ class NativeUI(F.NSObject):
         self.state = 'starting'
         self.detail = ''
         self.windows = {}
-        self.fields = {}
         self.menu_items = {}
+        self.draft = None
+        self._saving = False
         self._quitting = False
         return self
 
@@ -107,50 +120,49 @@ class NativeUI(F.NSObject):
     @objc.python_method
     def _build_menu(self):
         self.status_item = A.NSStatusBar.systemStatusBar().statusItemWithLength_(A.NSVariableStatusItemLength)
-        image = A.NSImage.imageWithSystemSymbolName_accessibilityDescription_('paperplane.fill', 'TG WS Proxy Mac')
-        if image is not None:
-            image.setSize_(A.NSMakeSize(18, 18))
-            image.setTemplate_(True)
-            self.status_item.button().setImage_(image)
-        else:
-            self.status_item.button().setTitle_('TG')
+        # The original round T icon, drawn natively for both appearances.
+        image = A.NSImage.alloc().initWithSize_(A.NSMakeSize(18, 18))
+        image.lockFocus()
+        A.NSColor.blackColor().setFill()
+        A.NSBezierPath.bezierPathWithOvalInRect_(rect(0, 0, 18, 18)).fill()
+        text = F.NSString.stringWithString_('T')
+        attributes = {A.NSFontAttributeName: A.NSFont.boldSystemFontOfSize_(12), A.NSForegroundColorAttributeName: A.NSColor.whiteColor()}
+        text.drawAtPoint_withAttributes_(A.NSMakePoint(5, 2), attributes)
+        image.unlockFocus()
+        image.setTemplate_(False)
+        self.status_item.button().setImage_(image)
+        self.status_item.button().setToolTip_('TG WS Proxy Mac')
         menu = A.NSMenu.alloc().initWithTitle_('TG WS Proxy Mac')
         menu.setAutoenablesItems_(False)
         entries = [
-            ('status', 'Запуск прокси…', None),
-            ('address', '', None),
-            None,
-            ('dashboard', 'Открыть окно', 'dashboard:'),
-            ('telegram', 'Подключить Telegram', 'openTelegram:'),
+            ('telegram', '', 'openTelegram:'),
             ('copy', 'Скопировать ссылку', 'copyLink:'),
             None,
-            ('settings', 'Настройки…', 'settings:'),
             ('restart', 'Перезапустить прокси', 'restart:'),
+            ('settings', 'Настройки...', 'settings:'),
             ('logs', 'Открыть логи', 'logs:'),
             None,
-            ('updates', 'Проверять обновления при запуске', 'toggleUpdates:'),
-            ('release', 'Страница релизов', 'release:'),
-            ('version', f'Версия {__version__}', None),
+            ('release', 'Страница релиза на GitHub…', 'release:'),
+            ('updates', '', 'toggleUpdates:'),
             None,
+            ('version', f'Версия {__version__}', None),
             ('quit', 'Выход', 'quit:'),
         ]
         for entry in entries:
             if entry is None:
                 menu.addItem_(A.NSMenuItem.separatorItem())
                 continue
-            key, text, action = entry
-            item = A.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(text, action, '')
+            key, title, action = entry
+            item = A.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, '')
             item.setTarget_(self)
             item.setEnabled_(action is not None)
             menu.addItem_(item)
             self.menu_items[key] = item
-        self.menu_items['settings'].setKeyEquivalent_(',')
         self.menu_items['quit'].setKeyEquivalent_('q')
         self.status_item.setMenu_(menu)
-        # Standard responder-chain commands keep keyboard editing native.
         main_menu = A.NSMenu.alloc().initWithTitle_('')
         for title, commands in (
-            ('TG WS Proxy Mac', [('Настройки…', 'settings:', ',', self), ('Выход', 'quit:', 'q', self)]),
+            ('TG WS Proxy Mac', [('Настройки...', 'settings:', ',', self), ('Выход', 'quit:', 'q', self)]),
             ('Правка', [('Вырезать', 'cut:', 'x', None), ('Копировать', 'copy:', 'c', None), ('Вставить', 'paste:', 'v', None), ('Выбрать всё', 'selectAll:', 'a', None)]),
             ('Окно', [('Закрыть', 'performClose:', 'w', None)]),
         ):
@@ -170,208 +182,185 @@ class NativeUI(F.NSObject):
     def update_config(self, config):
         self.config = deepcopy(config)
         if self.menu_items:
-            self.menu_items['address'].setTitle_(f"{config['host']}:{config['port']}")
-            self.menu_items['updates'].setState_(A.NSControlStateValueOn if config.get('check_updates', True) else A.NSControlStateValueOff)
-        if 'dashboard' in self.windows:
-            self.host_value.setStringValue_(str(config['host']))
-            self.port_value.setStringValue_(str(config['port']))
+            address = f"{get_link_host(config['host'])}:{config['port']}"
+            self.menu_items['telegram'].setTitle_(f'Открыть в Telegram ({address})')
+            on = config.get('check_updates', True)
+            self.menu_items['updates'].setTitle_('✓ Проверять обновления при запуске' if on else 'Проверять обновления при запуске (выкл)')
 
     @objc.python_method
     def update_state(self, state, detail=''):
         self.state, self.detail = state, detail
-        texts = {'starting': 'Запуск прокси…', 'running': 'Прокси готов', 'error': 'Требуется внимание', 'stopping': 'Завершение…'}
-        text = texts.get(state, state)
+        text = {'starting': 'Запуск прокси…', 'running': 'Прокси работает', 'error': detail or 'Ошибка запуска', 'stopping': 'Завершение…'}.get(state, state)
         if self.menu_items:
-            self.menu_items['status'].setTitle_(text)
+            self.status_item.button().setToolTip_(f'TG WS Proxy Mac — {text}')
             self.menu_items['restart'].setEnabled_(state in ('running', 'error'))
             self.menu_items['telegram'].setEnabled_(state == 'running')
-        if 'dashboard' in self.windows:
-            self.status_label.setStringValue_(text)
-            self.status_label.setTextColor_(A.NSColor.systemGreenColor() if state == 'running' else A.NSColor.secondaryLabelColor())
-            self.dashboard_detail.setStringValue_(detail or 'Выберите «Подключить Telegram», чтобы включить прокси.')
-            self.restart_button.setEnabled_(state in ('running', 'error'))
-            self.connect_button.setEnabled_(state == 'running')
-        if 'settings' in self.windows and state in ('running', 'error'):
-            self.saving_label.setStringValue_('Настройки применены' if state == 'running' else detail)
-            self.saving_label.setTextColor_(A.NSColor.secondaryLabelColor() if state == 'running' else A.NSColor.systemRedColor())
-            self.save_button.setEnabled_(True)
+        if state == 'error' and not self._quitting:
+            self.show_message('TG WS Proxy Mac', detail or 'Не удалось запустить прокси.')
 
     @objc.python_method
     def _show(self, key):
         self.windows[key].makeKeyAndOrderFront_(None)
         A.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
 
-    def dashboard_(self, sender):
-        if 'dashboard' not in self.windows:
-            window, content = glass_window('TG WS Proxy Mac', 540, 440)
-            self.windows['dashboard'] = window
-            icon = A.NSImageView.alloc().initWithFrame_(rect(30, 336, 48, 48))
-            icon.setImage_(A.NSImage.imageWithSystemSymbolName_accessibilityDescription_('paperplane.circle.fill', 'Telegram proxy'))
-            icon.setContentTintColor_(A.NSColor.controlAccentColor())
-            icon.setImageScaling_(A.NSImageScaleProportionallyUpOrDown)
-            content.addSubview_(icon)
-            label(content, 'TG WS Proxy Mac', 94, 358, 270, size=18, bold=True)
-            label(content, 'Локальный прокси для Telegram', 94, 334, 350, size=12, secondary=True)
-            label(content, f'{__version__}', 450, 357, 65, size=12, secondary=True)
-            label(content, 'Telegram, без ожидания.', 30, 272, 480, 44, size=28, bold=True)
-            self.status_label = label(content, '', 30, 235, 470, 26, size=15, bold=True)
-            self.dashboard_detail = label(content, '', 30, 188, 480, 42, size=13, secondary=True)
-            label(content, 'СЕРВЕР', 30, 155, 240, size=10, bold=True, secondary=True)
-            label(content, 'ПОРТ', 334, 155, 170, size=10, bold=True, secondary=True)
-            self.host_value = label(content, '', 30, 123, 280, 30, size=21, bold=True)
-            self.port_value = label(content, '', 334, 123, 170, 30, size=21, bold=True)
-            self.restart_button = button(content, 'Перезапустить', 30, 68, 154, self, 'restart:')
-            button(content, 'Настройки', 196, 68, 132, self, 'settings:')
-            self.connect_button = button(content, 'Подключить Telegram', 338, 68, 180, self, 'openTelegram:', primary=True)
-            button(content, 'Скопировать ссылку', 30, 18, 200, self, 'copyLink:')
-            self.copy_note = label(content, '', 246, 27, 260, size=12, secondary=True)
-        self.update_config(self.config)
-        self.update_state(self.state, self.detail)
-        self._show('dashboard')
-
-    @objc.python_method
-    def _field(self, page, key, title, x, y, width, hint=None, secure=False):
-        label(page, title, x, y + 42, width, size=12, bold=True)
-        cls = A.NSSecureTextField if secure else A.NSTextField
-        field = cls.alloc().initWithFrame_(rect(x, y, width, 32))
-        field.setFont_(A.NSFont.systemFontOfSize_(14))
-        field.setAccessibilityLabel_(title)
-        field.setBezeled_(True)
-        field.setBezelStyle_(A.NSTextFieldRoundedBezel)
-        page.addSubview_(field)
-        self.fields[key] = field
-        if hint:
-            label(page, hint, x, y - 38, width, 32, size=11, secondary=True)
-        return field
-
-    @objc.python_method
-    def _check(self, page, key, text, x, y):
-        control = A.NSButton.checkboxWithTitle_target_action_(text, None, None)
-        control.setFrame_(rect(x, y, 610, 30))
-        page.addSubview_(control)
-        self.fields[key] = control
-        return control
-
     def settings_(self, sender):
-        if 'settings' not in self.windows:
-            window, content = glass_window('Настройки', 700, 650)
-            self.windows['settings'] = window
-            label(content, 'Настройки', 28, 565, 500, 36, size=26, bold=True)
-            label(content, 'Все параметры прокси в одном окне.', 28, 535, 620, size=13, secondary=True)
-            self.tab_buttons = []
-            for i, title in enumerate(('Подключение', 'Сеть', 'Дополнительно')):
-                tab = button(content, title, 28 + 215 * i, 474, 205, self, 'selectTab:')
-                tab.setTag_(i)
-                self.tab_buttons.append(tab)
-            self.pages = []
-            for _ in range(3):
-                page = A.NSView.alloc().initWithFrame_(rect(28, 120, 644, 340))
-                content.addSubview_(page)
-                self.pages.append(page)
-            connection, network, advanced = self.pages
-            self._field(connection, 'host', 'Адрес сервера', 0, 238, 414, 'Обычно 127.0.0.1 — только на этом Mac.')
-            self._field(connection, 'port', 'Порт', 450, 238, 194, 'От 1 до 65535.')
-            self._field(connection, 'secret', 'Ключ подключения · Secret', 0, 114, 644, '32 символа. Ссылку с ключом можно скопировать в главном окне.', secure=True)
-            button(connection, 'Создать новый ключ', 0, 34, 208, self, 'newSecret:')
-            label(connection, 'Новый ключ потребует повторного подключения Telegram.', 224, 38, 420, 38, size=11, secondary=True)
-            self._check(network, 'cfproxy', 'Использовать Cloudflare Proxy как резервный маршрут', 0, 292)
-            self._field(network, 'dc_ip', 'Маршруты дата-центров', 0, 214, 644, 'Например: 2:149.154.167.220, 4:149.154.167.220. Можно оставить пустым.')
-            self._field(network, 'cfproxy_user_domain', 'Свои Cloudflare-домены', 0, 116, 644, 'Через запятую. Пустое поле — автоматический выбор.')
-            self._field(network, 'cfproxy_worker_domain', 'Cloudflare Worker', 0, 18, 644)
-            button(network, 'Как настроить Worker', 422, 54, 222, self, 'workerHelp:')
-            self._field(advanced, 'buf_kb', 'Буфер · КБ', 0, 236, 190, 'От 4 до 65536.')
-            self._field(advanced, 'pool_size', 'Пул соединений', 222, 236, 190, 'От 0 до 32.')
-            self._field(advanced, 'log_max_mb', 'Журнал · МБ', 444, 236, 200, 'От 0,1 до 1024.')
-            self._check(advanced, 'check_updates', 'Проверять обновления при запуске', 0, 134)
-            self._check(advanced, 'verbose', 'Подробный журнал работы', 0, 90)
-            label(advanced, 'Изменения применяются без выхода из приложения.', 0, 30, 620, 38, size=12, secondary=True)
-            self.saving_label = label(content, '', 28, 77, 644, 32, size=12, secondary=True)
-            button(content, 'Закрыть', 28, 22, 120, self, 'closeSettings:')
-            self.save_button = button(content, 'Сохранить и применить', 430, 22, 244, self, 'saveSettings:', primary=True)
-            self.save_button.setKeyEquivalent_('\r')
-            self._select_page(0)
-        if not self.windows['settings'].isVisible():
-            self._populate_settings()
+        if 'settings' in self.windows and self.windows['settings'].isVisible():
+            self._show('settings')
+            return
+        self.draft = deepcopy(self.config)
+        self.step_index = 0
+        self._render_step()
+
+    @objc.python_method
+    def _render_step(self):
+        if 'settings' in self.windows:
+            self.windows['settings'].orderOut_(None)
+        key, prompt = self.STEPS[self.step_index]
+        boolean = key in ('verbose', 'cfproxy')
+        height = 200 if boolean else 270 if len(prompt) > 80 else 220
+        window, content = glass_window('TG WS Proxy Mac', 520, height)
+        self.windows['settings'] = window
+        label(content, prompt, 24, 96 if boolean else 146, 472, height - (136 if boolean else 186), size=13)
+        self.step_field = None
+        if not boolean:
+            self.step_field = A.NSTextField.alloc().initWithFrame_(rect(24, 104, 472, 30))
+            self.step_field.setFont_(A.NSFont.systemFontOfSize_(13))
+            self.step_field.setBezeled_(True)
+            self.step_field.setBezelStyle_(A.NSTextFieldRoundedBezel)
+            self.step_field.setAccessibilityLabel_(prompt)
+            if key == 'advanced':
+                value = ','.join(str(self.draft[k]) for k in ('buf_kb', 'pool_size', 'log_max_mb'))
+            else:
+                value = self.draft[key]
+                if isinstance(value, list):
+                    value = ', '.join(value)
+            self.step_field.setStringValue_(str(value))
+            content.addSubview_(self.step_field)
+            window.setInitialFirstResponder_(self.step_field)
+        self.error_label = label(content, '', 24, 58, 472, 40, size=11, secondary=True)
+        self.cancel_button = button(content, 'Закрыть', 24, 16, 116, self, 'closeSettings:')
+        self.cancel_button.setKeyEquivalent_('\x1b')
+        if boolean:
+            no = button(content, 'Нет', 252, 16, 116, self, 'answerNo:')
+            no.setTag_(0)
+            self.next_button = button(content, 'Да', 380, 16, 116, self, 'answerYes:', primary=True)
+        else:
+            if key == 'cfproxy_worker_domain':
+                button(content, '?', 316, 16, 52, self, 'workerHelp:')
+            self.next_button = button(content, 'OK', 380, 16, 116, self, 'nextStep:', primary=True)
+        self.next_button.setKeyEquivalent_('\r')
+        self._saving = False
         self._show('settings')
 
     @objc.python_method
-    def _populate_settings(self):
-        for key, field in self.fields.items():
-            value = self.config.get(key)
-            if key in ('cfproxy', 'check_updates', 'verbose'):
-                field.setState_(A.NSControlStateValueOn if value else A.NSControlStateValueOff)
-            else:
-                field.setStringValue_(', '.join(value) if isinstance(value, list) else str(value))
-        self.saving_label.setStringValue_('')
-        self.save_button.setEnabled_(True)
-
-    @objc.python_method
-    def _select_page(self, index):
-        for i, page in enumerate(self.pages):
-            page.setHidden_(i != index)
-            tab = self.tab_buttons[i]
-            if has_liquid_glass():
-                tab.setTintProminence_(A.NSTintProminenceSecondary if i == index else A.NSTintProminenceNone)
-            else:
-                tab.setBezelColor_(A.NSColor.controlAccentColor() if i == index else None)
-
-    def selectTab_(self, sender):
-        self._select_page(sender.tag())
-
-    def newSecret_(self, sender):
-        self.fields['secret'].setStringValue_(os.urandom(16).hex())
-        self.saving_label.setStringValue_('Новый ключ будет применён после сохранения.')
-
-    def saveSettings_(self, sender):
-        values = {key: field.state() == A.NSControlStateValueOn if key in ('cfproxy', 'check_updates', 'verbose') else field.stringValue() for key, field in self.fields.items()}
+    def _advance(self, answer=None):
+        key, _ = self.STEPS[self.step_index]
+        values = {k: ', '.join(v) if isinstance(v, list) else v for k, v in self.draft.items()}
+        if key in ('verbose', 'cfproxy'):
+            values[key] = answer
+        elif key == 'advanced':
+            parts = [part.strip() for part in self.step_field.stringValue().split(',')]
+            if len(parts) != 3:
+                self.error_label.setStringValue_('Введите три числа через запятую: буфер KB, WS пул, лог MB.')
+                self.error_label.setTextColor_(A.NSColor.systemRedColor())
+                return
+            values.update(zip(('buf_kb', 'pool_size', 'log_max_mb'), parts))
+        else:
+            values[key] = self.step_field.stringValue()
         try:
-            config = validate_settings(values, self.config)
+            candidate = validate_settings(values, self.draft)
         except ValueError as exc:
-            self.saving_label.setTextColor_(A.NSColor.systemRedColor())
-            self.saving_label.setStringValue_(str(exc))
+            self.error_label.setStringValue_(str(exc))
+            self.error_label.setTextColor_(A.NSColor.systemRedColor())
             return
-        self.saving_label.setTextColor_(A.NSColor.secondaryLabelColor())
-        self.saving_label.setStringValue_('Сохраняем и применяем…')
-        self.save_button.setEnabled_(False)
-        self.callbacks['save'](config)
+        self.draft = candidate
+        if self.step_index < len(self.STEPS) - 1:
+            self.step_index += 1
+            self._render_step()
+        else:
+            self._saving = True
+            self.error_label.setStringValue_('Сохраняем настройки…')
+            self.error_label.setTextColor_(A.NSColor.secondaryLabelColor())
+            self.next_button.setEnabled_(False)
+            self.cancel_button.setEnabled_(False)
+            self.callbacks['save'](deepcopy(self.draft))
 
-    @objc.python_method
-    def save_failed(self, message):
-        if 'settings' in self.windows:
-            self.saving_label.setStringValue_(message)
-            self.saving_label.setTextColor_(A.NSColor.systemRedColor())
-            self.save_button.setEnabled_(True)
+    def nextStep_(self, sender):
+        if not self._saving:
+            self._advance()
+
+    def answerYes_(self, sender):
+        self._advance(True)
+
+    def answerNo_(self, sender):
+        self._advance(False)
 
     def closeSettings_(self, sender):
         self.windows['settings'].orderOut_(None)
+        self.draft = None
 
     @objc.python_method
-    def show_message(self, title, text, action_title=None, action=None):
-        window, content = glass_window(title, 520, 290)
+    def settings_saved(self):
+        self.windows['settings'].orderOut_(None)
+        self.draft = None
+        self._saving = False
+        self.show_message('TG WS Proxy Mac', 'Настройки сохранены.\n\nПерезапустить прокси сейчас?', choices=(('Закрыть', None), ('Нет', None), ('Да', self.callbacks['restart'])))
+
+    @objc.python_method
+    def save_failed(self, message):
+        self._saving = False
+        if 'settings' in self.windows and self.windows['settings'].isVisible():
+            self.error_label.setStringValue_(message)
+            self.error_label.setTextColor_(A.NSColor.systemRedColor())
+            self.next_button.setEnabled_(True)
+            self.cancel_button.setEnabled_(True)
+        else:
+            self.show_message('TG WS Proxy Mac', message)
+
+    @objc.python_method
+    def show_first_run(self):
+        host, port = get_link_host(self.config['host']), self.config['port']
+        text = (f'Прокси работает в строке меню.\n\n'
+                f'Как подключить Telegram Desktop:\n'
+                f'Нажмите «Открыть в Telegram» в меню.\n\n'
+                f'Вручную: Настройки → Продвинутые → Тип подключения → Прокси\n'
+                f'MTProto → {host} : {port}\nSecret: dd{self.config["secret"]}\n\n'
+                f'Открыть прокси в Telegram сейчас?')
+        self.show_message('TG WS Proxy Mac', text, choices=(('Закрыть', None), ('Нет', None), ('Да', self.callbacks['telegram'])))
+
+    @objc.python_method
+    def show_message(self, title, text, action_title=None, action=None, choices=None):
+        if 'message' in self.windows:
+            self.windows['message'].orderOut_(None)
+        height = 410 if len(text) > 250 else 260
+        window, content = glass_window(title, 520, height)
         self.windows['message'] = window
-        self.message_action = action
-        label(content, title, 28, 197, 464, 44, size=22, bold=True)
-        label(content, text, 28, 92, 464, 100, size=13, secondary=True)
-        button(content, 'Закрыть', 28, 24, 120, self, 'closeMessage:')
-        if action_title and action:
-            button(content, action_title, 276, 24, 216, self, 'messageAction:', primary=True)
+        label(content, text, 24, 80, 472, height - 125, size=13)
+        if choices is None:
+            choices = [('OK', None)] if not action_title else [('Закрыть', None), (action_title, action)]
+        self.message_actions = [callback for _, callback in choices]
+        for index, (title, _) in enumerate(choices):
+            width = 116 if len(choices) != 2 else 220
+            x = 496 - (len(choices) - index) * (width + 12) + 12
+            control = button(content, title, x, 20, width, self, 'messageChoice:', primary=index == len(choices) - 1)
+            control.setTag_(index)
+            if index == len(choices) - 1:
+                control.setKeyEquivalent_('\r')
+            elif index == 0:
+                control.setKeyEquivalent_('\x1b')
         self._show('message')
 
-    def closeMessage_(self, sender):
+    def messageChoice_(self, sender):
+        callback = self.message_actions[sender.tag()]
         self.windows['message'].orderOut_(None)
-
-    def messageAction_(self, sender):
-        if self.message_action:
-            self.message_action()
-        self.closeMessage_(None)
+        if callback:
+            callback()
 
     def openTelegram_(self, sender):
         self.callbacks['telegram']()
 
     def copyLink_(self, sender):
         self.callbacks['copy']()
-        if 'dashboard' in self.windows:
-            self.copy_note.setStringValue_('Ссылка скопирована')
 
     def restart_(self, sender):
         self.callbacks['restart']()

@@ -84,25 +84,81 @@ class ProxyServiceTests(unittest.TestCase):
         self.assertIsNone(service.restart(config))
 
 class NativeWindowTests(unittest.TestCase):
-    def test_native_settings_form_and_glass_fallback(self):
+    def test_original_menu_and_stepwise_settings_with_glass_fallback(self):
         import AppKit as A
         from native_ui import NativeUI
         import native_ui
         A.NSApplication.sharedApplication()
-        callbacks = {key: (lambda *args: None) for key in ('started', 'telegram', 'copy', 'restart', 'logs', 'save', 'save_preferences', 'release', 'help', 'quit')}
         for glass in (False, native_ui.has_liquid_glass()):
+            saved, restarted = [], []
+            callbacks = {key: (lambda *args: None) for key in ('started', 'telegram', 'copy', 'restart', 'logs', 'save', 'save_preferences', 'release', 'help', 'quit')}
+            callbacks['save'] = saved.append
+            callbacks['restart'] = lambda: restarted.append(True)
             with self.subTest(glass=glass), patch.object(native_ui, 'has_liquid_glass', return_value=glass):
                 ui = NativeUI.alloc().init()
                 config = default_tray_config()
                 ui.configure(callbacks, config)
-                ui.dashboard_(None)
+                ui._build_menu()
+                self.assertEqual(list(ui.menu_items), ['telegram', 'copy', 'restart', 'settings', 'logs', 'release', 'updates', 'version', 'quit'])
+                self.assertEqual(ui.menu_items['telegram'].title(), 'Открыть в Telegram (127.0.0.1:1443)')
                 ui.settings_(None)
-                self.assertEqual(ui.fields['host'].stringValue(), config['host'])
-                self.assertEqual(ui.fields['port'].stringValue(), str(config['port']))
-                self.assertEqual(ui.fields['secret'].stringValue(), config['secret'])
-                self.assertEqual(len(ui.pages), 3)
-                self.assertEqual(ui.save_button.bezelStyle(), A.NSBezelStyleGlass if glass else A.NSBezelStyleRounded)
-                ui.update_state('error', 'Порт занят')
-                self.assertTrue(ui.save_button.isEnabled())
-                ui.windows['dashboard'].close()
-                ui.windows['settings'].close()
+                self.assertEqual(ui.step_field.stringValue(), config['host'])
+                self.assertEqual(ui.next_button.bezelStyle(), A.NSBezelStyleGlass if glass else A.NSBezelStyleRounded)
+                ui.nextStep_(None)
+                ui.step_field.setStringValue_('70000')
+                ui.nextStep_(None)
+                self.assertEqual(ui.step_index, 1)
+                self.assertIn('65535', ui.error_label.stringValue())
+                self.assertFalse(saved)
+                ui.step_field.setStringValue_('2443')
+                ui.nextStep_(None)
+                # Cancelling after editing must leave the live config untouched.
+                ui.closeSettings_(None)
+                self.assertEqual(ui.config, config)
+                self.assertFalse(saved)
+                ui.settings_(None)
+                for key, _ in ui.STEPS:
+                    if key in ('verbose', 'cfproxy'):
+                        ui._advance(config[key])
+                    else:
+                        if key == 'port':
+                            ui.step_field.setStringValue_('2443')
+                        ui.nextStep_(None)
+                self.assertEqual(len(saved), 1)
+                self.assertEqual(saved[0]['port'], 2443)
+                self.assertEqual(ui.config, config)
+                self.assertFalse(restarted)
+                ui.update_config(saved[0])
+                ui.settings_saved()
+                # Saving only offers a restart; it never restarts automatically.
+                self.assertFalse(restarted)
+                no = A.NSButton.alloc().init()
+                no.setTag_(1)
+                ui.messageChoice_(no)
+                self.assertFalse(restarted)
+                ui.settings_saved()
+                yes = A.NSButton.alloc().init()
+                yes.setTag_(2)
+                ui.messageChoice_(yes)
+                self.assertEqual(restarted, [True])
+                for window in ui.windows.values():
+                    window.close()
+                A.NSStatusBar.systemStatusBar().removeStatusItem_(ui.status_item)
+
+    def test_coordinator_waits_for_restart_choice_after_save(self):
+        from macos import MacApp
+        application = MacApp(preview=True, settings_preview=True)
+        try:
+            application.ui.settings_(None)
+            config = deepcopy(application.config)
+            config['port'] = 2443
+            with patch.object(application, 'restart') as restart:
+                application.save(config)
+                restart.assert_not_called()
+            self.assertEqual(application.config['port'], 2443)
+            self.assertTrue(application.ui.windows['message'].isVisible())
+        finally:
+            for window in application.ui.windows.values():
+                window.close()
+            application.disk.shutdown(wait=False)
+            application.background.shutdown(wait=False)

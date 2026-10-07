@@ -23,6 +23,7 @@ class MacApp:
     def __init__(self, preview=False, settings_preview=False):
         self.preview = preview
         self.settings_preview = settings_preview
+        self.first_run_pending = False
         self.config = deepcopy(DEFAULT_CONFIG)
         if preview:
             self.config['secret'] = '0' * 32
@@ -42,9 +43,10 @@ class MacApp:
     def boot(self):
         if self.preview:
             self.ui.update_state('running')
-            self.ui.dashboard_(None)
             if self.settings_preview:
                 self.ui.settings_(None)
+            else:
+                self.ui.show_first_run()
             return
         def load():
             ensure_dirs()
@@ -68,14 +70,19 @@ class MacApp:
     def _finish_load(self, config, first_run):
         self.config = config
         self.ui.update_config(config)
+        self.first_run_pending = first_run
         self.restart()
-        if first_run:
-            self.ui.dashboard_(None)
         if config.get('check_updates', True):
             self.background.submit(self.check_updates)
 
     def _state_changed(self, state, detail):
-        AppHelper.callAfter(self.ui.update_state, state, detail)
+        AppHelper.callAfter(self._show_state, state, detail)
+
+    def _show_state(self, state, detail):
+        self.ui.update_state(state, detail)
+        if state == 'running' and self.first_run_pending:
+            self.first_run_pending = False
+            self.ui.show_first_run()
 
     def restart(self):
         self.ui.update_state('starting')
@@ -109,7 +116,7 @@ class MacApp:
         if self.preview:
             self.config = config
             self.ui.update_config(config)
-            self.restart()
+            self.ui.settings_saved()
             return
         self.disk.submit(save_config, config).add_done_callback(lambda future: self._saved(future, config, True))
 
@@ -120,26 +127,26 @@ class MacApp:
             return
         self.disk.submit(save_config, config).add_done_callback(lambda future: self._saved(future, config, False))
 
-    def _saved(self, future, config, restart):
+    def _saved(self, future, config, settings_done):
         try:
             future.result()
         except Exception as exc:
             AppHelper.callAfter(self.ui.save_failed, f'Не удалось сохранить: {exc}')
             return
-        if restart:
-            log.info('Settings saved; restarting proxy')
-        AppHelper.callAfter(self._apply_saved, config, restart)
+        if settings_done:
+            log.info('Settings saved')
+        AppHelper.callAfter(self._apply_saved, config, settings_done)
 
-    def _apply_saved(self, config, restart):
+    def _apply_saved(self, config, settings_done):
         self.config = config
         self.ui.update_config(config)
-        if restart:
+        if settings_done:
             root = logging.getLogger()
             root.setLevel(logging.DEBUG if config.get('verbose') else logging.INFO)
             for handler in root.handlers:
                 if isinstance(handler, logging.handlers.RotatingFileHandler):
                     handler.maxBytes = max(32768, int(config.get('log_max_mb', 5) * 1024 * 1024))
-            self.restart()
+            self.ui.settings_saved()
 
     def check_updates(self):
         try:

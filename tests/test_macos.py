@@ -55,10 +55,15 @@ class MacOSIntegrationTests(unittest.TestCase):
 
     def test_native_clipboard(self):
         import macos
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
         config = default_tray_config()
-        with patch.object(macos, '_config', config), patch.object(macos.subprocess, 'run') as clipboard:
-            macos._on_copy_link()
-            clipboard.assert_called_once_with(['pbcopy'], input=macos_common.tg_proxy_url(config).encode(), check=True)
+        pasteboard = MagicMock()
+        with patch.object(macos.A, 'NSPasteboard') as clipboard_class:
+            clipboard_class.generalPasteboard.return_value = pasteboard
+            macos.MacApp.copy_link(SimpleNamespace(config=config))
+        pasteboard.clearContents.assert_called_once()
+        pasteboard.setString_forType_.assert_called_once_with(macos_common.tg_proxy_url(config), macos.A.NSPasteboardTypeString)
 
     def test_aes_ctr_known_vector(self):
         key = bytes.fromhex('2b7e151628aed2a6abf7158809cf4f3c')

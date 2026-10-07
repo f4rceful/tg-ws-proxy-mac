@@ -15,14 +15,14 @@ a = Analysis(
     binaries=[],
     datas=[],
     hiddenimports=[
-        'rumps', 'objc', 'Foundation', 'AppKit', 'PyObjCTools.AppHelper',
+        'objc', 'Foundation', 'AppKit', 'PyObjCTools.AppHelper',
         'cryptography.hazmat.primitives.ciphers',
         'cryptography.hazmat.backends.openssl',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['PIL._avif', 'PIL._webp', 'PIL._imagingtk', 'tkinter'],
+    excludes=['PIL', 'tkinter'],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

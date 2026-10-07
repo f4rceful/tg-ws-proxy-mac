@@ -21,8 +21,7 @@ classifiers = [
 ]
 dependencies = [
     "cryptography==46.0.5",
-    "rumps==0.4.0",
-    "Pillow==12.1.0",
+    "pyobjc-framework-Cocoa==12.2.2",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +39,7 @@ packages = ["proxy", "utils"]
 
 [tool.hatch.build.force-include]
 "macos.py" = "macos.py"
+"native_ui.py" = "native_ui.py"
 
 [tool.hatch.version]
 path = "proxy/__init__.py"

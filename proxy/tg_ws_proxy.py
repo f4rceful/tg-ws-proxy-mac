@@ -428,7 +428,7 @@ _server_stop_event = None
 _client_tasks: Set[asyncio.Task] = set()
 
 
-async def _run(stop_event: Optional[asyncio.Event] = None):
+async def _run(stop_event: Optional[asyncio.Event] = None, on_ready=None):
     global _server_instance, _server_stop_event
     _server_stop_event = stop_event
 
@@ -454,6 +454,8 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
 
     server = await asyncio.start_server(client_cb, proxy_config.host, proxy_config.port)
     _server_instance = server
+    if on_ready is not None:
+        on_ready()
 
     for sock in server.sockets:
         try:

@@ -72,20 +72,12 @@ def glass_window(title, width, height):
     return window, content
 
 
-class NativeUI(F.NSObject):
-    # Keep the original dialog order and one decision per window.
-    STEPS = (
-        ('host', 'IP-адрес прокси:'),
-        ('port', 'Порт прокси:'),
-        ('secret', 'MTProto Secret (32 hex символа):'),
-        ('dc_ip', 'DC → IP маппинги (через запятую, формат DC:IP):\nНапример: 2:149.154.167.220, 4:149.154.167.220'),
-        ('verbose', 'Включить подробное логирование (verbose)?'),
-        ('advanced', 'Расширенные настройки (буфер KB, WS пул, лог MB):\nФормат: buf_kb,pool_size,log_max_mb'),
-        ('cfproxy', 'Включить Cloudflare Proxy (CfProxy)?'),
-        ('cfproxy_user_domain', 'Свои CF-домены через запятую (оставьте пустым для автоматического выбора):\nDNS записи kws1-kws5,kws203 должны указывать на IP датацентров Telegram через Cloudflare.'),
-        ('cfproxy_worker_domain', 'Cloudflare Worker домены через запятую (например, name.account.workers.dev):'),
-    )
+class FlippedView(A.NSView):
+    def isFlipped(self):
+        return True
 
+
+class NativeUI(F.NSObject):
     def init(self):
         self = objc.super(NativeUI, self).init()
         if self is None:
@@ -97,7 +89,6 @@ class NativeUI(F.NSObject):
         self.windows = {}
         self.menu_items = {}
         self.localized_items = []
-        self.draft = None
         self._saving = False
         self.update_busy = False
         self.update_info = {}
@@ -108,7 +99,7 @@ class NativeUI(F.NSObject):
     def configure(self, callbacks, config, startup_available=False):
         self.callbacks = callbacks
         self.config = deepcopy(config)
-        self.steps = self.STEPS + ((('autostart', 'Запускать TG WS Proxy Mac при входе в macOS?\nПосле перемещения приложения включите автозапуск заново.'),) if startup_available else ())
+        self.startup_available = startup_available
         set_language(config.get('language', 'auto'))
 
     def applicationDidFinishLaunching_(self, notification):
@@ -191,6 +182,8 @@ class NativeUI(F.NSObject):
     def update_config(self, config):
         self.config = deepcopy(config)
         set_language(config.get('language', 'auto'))
+        appearance = {'light': A.NSAppearanceNameAqua, 'dark': A.NSAppearanceNameDarkAqua}.get(config.get('appearance'))
+        A.NSApplication.sharedApplication().setAppearance_(A.NSAppearance.appearanceNamed_(appearance) if appearance else None)
         for item, title in self.localized_items:
             item.setTitle_(t(title))
         if self.menu_items:
@@ -220,11 +213,11 @@ class NativeUI(F.NSObject):
             item.setHidden_(not available)
             item.setTitle_(t('Обновить {current} → {version}', current=__version__, version=status.get('latest') or '?'))
             item.setEnabled_(available and not self.update_busy)
-        if 'settings' in self.windows and self.windows['settings'].isVisible() and not self._saving:
-            value = self.step_field.stringValue() if self.step_field else None
-            self._render_step()
-            if value is not None:
-                self.step_field.setStringValue_(value)
+        if 'settings' in self.windows:
+            self.form_update_button.setHidden_(not available)
+            self.form_update_button.setTitle_(t('Обновить до {version}', version=status.get('latest') or '?'))
+            self.form_update_button.setEnabled_(available and not self.update_busy)
+            self.form_update_label.setStringValue_(t('Доступно обновление') if available else t('Версия {version}', version=__version__))
 
     @objc.python_method
     def show_update_progress(self):
@@ -273,112 +266,191 @@ class NativeUI(F.NSObject):
     def settings_(self, sender):
         if self.update_busy:
             return
-        if 'settings' in self.windows and self.windows['settings'].isVisible():
-            self._show('settings')
-            return
-        self.draft = deepcopy(self.config)
-        self.step_index = 0
-        self._render_step()
-
-    @objc.python_method
-    def _render_step(self):
-        if 'settings' in self.windows:
-            self.windows['settings'].orderOut_(None)
-        key, prompt = self.steps[self.step_index]
-        boolean = key in ('verbose', 'cfproxy', 'autostart')
-        prompt = t(prompt)
-        base_height = 200 if boolean else 270 if len(prompt) > 80 else 220
-        offset = 58 if self.update_info.get('has_update') else 0
-        height = base_height + offset
-        window, content = glass_window('TG WS Proxy Mac', 520, height)
-        self.windows['settings'] = window
-        label(content, prompt, 24, (96 if boolean else 146) + offset, 472, base_height - (136 if boolean else 186), size=13)
-        self.step_field = None
-        if not boolean:
-            self.step_field = A.NSTextField.alloc().initWithFrame_(rect(24, 104 + offset, 472, 30))
-            self.step_field.setFont_(A.NSFont.systemFontOfSize_(13))
-            self.step_field.setBezeled_(True)
-            self.step_field.setBezelStyle_(A.NSTextFieldRoundedBezel)
-            self.step_field.setAccessibilityLabel_(prompt)
-            if key == 'advanced':
-                value = ','.join(str(self.draft[k]) for k in ('buf_kb', 'pool_size', 'log_max_mb'))
-            else:
-                value = self.draft[key]
-                if isinstance(value, list):
-                    value = ', '.join(value)
-            self.step_field.setStringValue_(str(value))
-            content.addSubview_(self.step_field)
-            window.setInitialFirstResponder_(self.step_field)
-        self.error_label = label(content, '', 24, 58 + offset, 472, 40, size=11, secondary=True)
-        self.cancel_button = button(content, 'Закрыть', 24, 16 + offset, 116, self, 'closeSettings:')
-        self.cancel_button.setKeyEquivalent_('\x1b')
-        if boolean:
-            no = button(content, 'Нет', 252, 16 + offset, 116, self, 'answerNo:')
-            no.setTag_(0)
-            self.next_button = button(content, 'Да', 380, 16 + offset, 116, self, 'answerYes:', primary=True)
-        else:
-            if key == 'cfproxy_worker_domain':
-                button(content, '?', 316, 16 + offset, 52, self, 'workerHelp:')
-            self.next_button = button(content, 'OK', 380, 16 + offset, 116, self, 'nextStep:', primary=True)
-        if offset:
-            button(content, t('Обновить до {version}', version=self.update_info['latest']), 24, 16, 472, self, 'installUpdate:')
-        self.next_button.setKeyEquivalent_('\r')
-        self._saving = False
+        if 'settings' not in self.windows or self.form_language != self.config.get('language', 'auto'):
+            if 'settings' in self.windows:
+                self.windows['settings'].close()
+            self._build_settings_form()
+        if not self.windows['settings'].isVisible():
+            self._populate_settings()
         self._show('settings')
 
     @objc.python_method
-    def _advance(self, answer=None):
-        key, _ = self.steps[self.step_index]
-        values = {k: ', '.join(v) if isinstance(v, list) else v for k, v in self.draft.items()}
-        if key in ('verbose', 'cfproxy', 'autostart'):
-            values[key] = answer
-        elif key == 'advanced':
-            parts = [part.strip() for part in self.step_field.stringValue().split(',')]
-            if len(parts) != 3:
-                self.error_label.setStringValue_(t('Введите три числа через запятую: буфер KB, WS пул, лог MB.'))
-                self.error_label.setTextColor_(A.NSColor.systemRedColor())
-                return
-            values.update(zip(('buf_kb', 'pool_size', 'log_max_mb'), parts))
-        else:
-            values[key] = self.step_field.stringValue()
+    def _build_settings_form(self):
+        self.form_language = self.config.get('language', 'auto')
+        window, content = glass_window('Настройки', 460, 560)
+        self.windows['settings'] = window
+        self.fields = {}
+        self.settings_scroll = A.NSScrollView.alloc().initWithFrame_(rect(20, 104, 420, 412))
+        self.settings_scroll.setHasVerticalScroller_(True)
+        self.settings_scroll.setAutohidesScrollers_(True)
+        self.settings_scroll.setDrawsBackground_(False)
+        self.form = FlippedView.alloc().initWithFrame_(rect(0, 0, 400, 1100))
+        self.settings_scroll.setDocumentView_(self.form)
+        content.addSubview_(self.settings_scroll)
+        y = 0
+
+        def section(title):
+            nonlocal y
+            if y:
+                y += 16
+            label(self.form, title, 0, y, 400, 24, size=13, bold=True)
+            y += 32
+
+        section('Интерфейс')
+        self._popup('language', 'Language', ('auto', 'ru', 'en'), ('Авто', 'Русский', 'English'), 0, y, 192)
+        self._popup('appearance', 'Тема', ('auto', 'light', 'dark'), ('Авто', 'Светлая', 'Тёмная'), 208, y, 192)
+        y += 68
+        section('Подключение MTProto')
+        self._form_field('host', 'IP-адрес', 0, y, 264)
+        self._form_field('port', 'Порт', 280, y, 120)
+        y += 64
+        self._form_field('secret', 'Secret', 0, y, 400)
+        y += 64
+        section('Датацентры Telegram (DC → IP)')
+        label(self.form, 'По одному правилу на строку, формат: номер:IP', 0, y, 400, 22, size=11, secondary=True)
+        y += 26
+        routes_scroll = A.NSScrollView.alloc().initWithFrame_(rect(0, y, 400, 72))
+        routes_scroll.setHasVerticalScroller_(True)
+        routes_scroll.setBorderType_(A.NSBezelBorder)
+        routes = A.NSTextView.alloc().initWithFrame_(rect(0, 0, 380, 72))
+        routes.setRichText_(False)
+        routes.setFont_(A.NSFont.systemFontOfSize_(13))
+        routes.setTextContainerInset_(A.NSMakeSize(6, 6))
+        routes.setAutoresizingMask_(A.NSViewWidthSizable)
+        routes.textContainer().setWidthTracksTextView_(True)
+        routes.setAccessibilityLabel_(t('Датацентры Telegram (DC → IP)'))
+        routes_scroll.setDocumentView_(routes)
+        self.form.addSubview_(routes_scroll)
+        self.fields['dc_ip'] = routes
+        y += 80
+        section('Cloudflare Proxy')
+        self._form_check('cfproxy', 'Включить CF-прокси', y)
+        y += 36
+        self._form_field('cfproxy_user_domain', 'Свои домены (через запятую)', 0, y, 400)
+        y += 60
+        label(self.form, 'Пустое поле — автоматический выбор.', 0, y, 400, 20, size=11, secondary=True)
+        y += 24
+        section('Cloudflare Worker')
+        self._form_field('cfproxy_worker_domain', 'Домены (через запятую)', 0, y, 400)
+        y += 62
+        button(self.form, 'Как настроить Worker', 0, y, 210, self, 'workerHelp:')
+        y += 44
+        section('Логи и производительность')
+        self._form_check('verbose', 'Подробное логирование (verbose)', y)
+        y += 36
+        for key, title in (('buf_kb', 'Буфер, КБ'), ('pool_size', 'Пул WebSocket-сессий'), ('log_max_mb', 'Макс. размер лога, МБ')):
+            label(self.form, title, 0, y + 4, 272, 26, size=12)
+            self._form_field(key, '', 288, y, 112, inline=True)
+            y += 38
+        section('Обновления')
+        self._form_check('check_updates', 'Проверять обновления при запуске', y)
+        y += 34
+        self.form_update_label = label(self.form, '', 0, y, 400, 24, size=12, secondary=True)
+        y += 28
+        self.form_update_button = button(self.form, '', 0, y, 400, self, 'installUpdate:')
+        y += 44
+        if self.startup_available:
+            section('Вход в macOS')
+            self._form_check('autostart', 'Запускать при входе в macOS', y)
+            y += 34
+            label(self.form, 'После перемещения приложения включите автозапуск заново.', 0, y, 400, 36, size=11, secondary=True)
+            y += 40
+        self.form.setFrameSize_(A.NSMakeSize(400, y + 12))
+        self.error_label = label(content, '', 20, 62, 420, 36, size=11, secondary=True)
+        self.cancel_button = button(content, 'Отмена', 20, 16, 128, self, 'closeSettings:')
+        self.cancel_button.setKeyEquivalent_('\x1b')
+        self.save_button = button(content, 'Сохранить', 288, 16, 152, self, 'saveSettings:', primary=True)
+        self.save_button.setKeyEquivalent_('\r')
+        window.setInitialFirstResponder_(self.fields['host'])
+        self.update_status(self.update_info)
+
+    @objc.python_method
+    def _form_field(self, key, title, x, y, width, inline=False):
+        if not inline:
+            label(self.form, title, x, y, width, 22, size=12)
+        field = A.NSTextField.alloc().initWithFrame_(rect(x, y if inline else y + 26, width, 30))
+        field.setFont_(A.NSFont.systemFontOfSize_(13))
+        field.setBezeled_(True)
+        field.setBezelStyle_(A.NSTextFieldRoundedBezel)
+        numeric_titles = {'buf_kb': 'Буфер, КБ', 'pool_size': 'Пул WebSocket-сессий', 'log_max_mb': 'Макс. размер лога, МБ'}
+        field.setAccessibilityLabel_(t(title or numeric_titles.get(key, key)))
+        self.form.addSubview_(field)
+        self.fields[key] = field
+
+    @objc.python_method
+    def _popup(self, key, title, values, titles, x, y, width):
+        label(self.form, title, x, y, width, 22, size=12)
+        control = A.NSPopUpButton.alloc().initWithFrame_pullsDown_(rect(x, y + 26, width, 30), False)
+        control.addItemsWithTitles_([t(text) for text in titles])
+        control.setAccessibilityLabel_(t(title))
+        self.form.addSubview_(control)
+        self.fields[key] = control
+        setattr(self, key + '_values', values)
+
+    @objc.python_method
+    def _form_check(self, key, title, y):
+        control = A.NSButton.checkboxWithTitle_target_action_(t(title), None, None)
+        control.setFrame_(rect(0, y, 400, 28))
+        self.form.addSubview_(control)
+        self.fields[key] = control
+
+    @objc.python_method
+    def _populate_settings(self):
+        for key, field in self.fields.items():
+            value = self.config.get(key)
+            if key in ('language', 'appearance'):
+                values = getattr(self, key + '_values')
+                field.selectItemAtIndex_(values.index(value) if value in values else 0)
+            elif key in ('cfproxy', 'check_updates', 'verbose', 'autostart'):
+                field.setState_(A.NSControlStateValueOn if value else A.NSControlStateValueOff)
+            elif key == 'dc_ip':
+                field.setString_('\n'.join(value or []))
+            else:
+                field.setStringValue_(', '.join(value) if isinstance(value, list) else str(value))
+        self.error_label.setStringValue_('')
+        self.save_button.setEnabled_(True)
+        self.cancel_button.setEnabled_(True)
+        self._saving = False
+        self.settings_scroll.contentView().scrollToPoint_(A.NSMakePoint(0, 0))
+        self.settings_scroll.reflectScrolledClipView_(self.settings_scroll.contentView())
+
+    def saveSettings_(self, sender):
+        if self._saving:
+            return
+        values = {}
+        for key, field in self.fields.items():
+            if key in ('language', 'appearance'):
+                values[key] = getattr(self, key + '_values')[field.indexOfSelectedItem()]
+            elif key in ('cfproxy', 'check_updates', 'verbose', 'autostart'):
+                values[key] = field.state() == A.NSControlStateValueOn
+            elif key == 'dc_ip':
+                values[key] = field.string()
+            else:
+                values[key] = field.stringValue()
         try:
-            candidate = validate_settings(values, self.draft)
+            candidate = validate_settings(values, self.config)
         except ValueError as exc:
             self.error_label.setStringValue_(t(str(exc)))
             self.error_label.setTextColor_(A.NSColor.systemRedColor())
             return
-        self.draft = candidate
-        if key == 'autostart':
-            self.draft['autostart'] = bool(answer)
-        if self.step_index < len(self.steps) - 1:
-            self.step_index += 1
-            self._render_step()
-        else:
-            self._saving = True
-            self.error_label.setStringValue_(t('Сохраняем настройки…'))
-            self.error_label.setTextColor_(A.NSColor.secondaryLabelColor())
-            self.next_button.setEnabled_(False)
-            self.cancel_button.setEnabled_(False)
-            self.callbacks['save'](deepcopy(self.draft))
-
-    def nextStep_(self, sender):
-        if not self._saving:
-            self._advance()
-
-    def answerYes_(self, sender):
-        self._advance(True)
-
-    def answerNo_(self, sender):
-        self._advance(False)
+        for key in ('language', 'appearance', 'autostart'):
+            if key in values:
+                candidate[key] = values[key]
+        self._saving = True
+        self.error_label.setStringValue_(t('Сохраняем настройки…'))
+        self.error_label.setTextColor_(A.NSColor.secondaryLabelColor())
+        self.save_button.setEnabled_(False)
+        self.cancel_button.setEnabled_(False)
+        self.form_update_button.setEnabled_(False)
+        self.callbacks['save'](candidate)
 
     def closeSettings_(self, sender):
-        self.windows['settings'].orderOut_(None)
-        self.draft = None
+        if not self._saving:
+            self.windows['settings'].orderOut_(None)
 
     @objc.python_method
     def settings_saved(self):
         self.windows['settings'].orderOut_(None)
-        self.draft = None
         self._saving = False
         self.show_message('TG WS Proxy Mac', 'Настройки сохранены.\n\nПерезапустить прокси сейчас?', choices=(('Закрыть', None), ('Нет', None), ('Да', self.callbacks['restart'])))
 
@@ -388,8 +460,9 @@ class NativeUI(F.NSObject):
         if 'settings' in self.windows and self.windows['settings'].isVisible():
             self.error_label.setStringValue_(t(message))
             self.error_label.setTextColor_(A.NSColor.systemRedColor())
-            self.next_button.setEnabled_(True)
+            self.save_button.setEnabled_(True)
             self.cancel_button.setEnabled_(True)
+            self.update_status(self.update_info)
         else:
             self.show_message('TG WS Proxy Mac', message)
 

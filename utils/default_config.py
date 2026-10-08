@@ -13,6 +13,7 @@ _DEFAULTS: Dict[str, Any] = {
     "check_updates": True,
     "autostart": False,
     "language": "auto",
+    "appearance": "auto",
     "log_max_mb": 5,
     "buf_kb": 256,
     "pool_size": 4,

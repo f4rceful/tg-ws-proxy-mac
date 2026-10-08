@@ -24,6 +24,7 @@ TG WS Proxy Mac хранит файлы в `~/Library/Application Support/TgWsPr
   "check_updates": true,
   "autostart": false,
   "language": "auto",
+  "appearance": "auto",
   "cfproxy": true,
   "cfproxy_user_domain": [],
   "cfproxy_worker_domain": []
@@ -34,8 +35,10 @@ TG WS Proxy Mac хранит файлы в `~/Library/Application Support/TgWsPr
 
 При `check_updates: true` приложение проверяет GitHub Releases репозитория `f4rceful/tg-ws-proxy-mac`. Установка обновления начинается только после подтверждения пользователя; черновики и артефакты сборок не учитываются. Релиз должен содержать `TgWsProxyMac_universal2.dmg` с SHA-256 в метаданных GitHub.
 
-`autostart` меняется последним шагом настроек собранной `.app`. Фактическое состояние берётся из пользовательского LaunchAgent `~/Library/LaunchAgents/com.github.f4rceful.tgwsproxymac.plist`; ручное изменение JSON не создаёт автозапуск. При запуске из исходников этот шаг скрыт.
+`autostart` меняется в разделе «Вход в macOS» настроек собранной `.app`. Фактическое состояние берётся из пользовательского LaunchAgent `~/Library/LaunchAgents/com.github.f4rceful.tgwsproxymac.plist`; ручное изменение JSON не создаёт автозапуск. При запуске из исходников этот раздел скрыт.
 
 `language`: `auto` — язык macOS (русский, если он основной; иначе английский), `ru` — русский, `en` — английский. Изменённое вручную значение используется после следующего запуска приложения.
 
 Настройки и LaunchAgent находятся отдельно от оригинального приложения Flowseal. Резервные копии обновлений хранятся рядом с установленной `.app` в `.tgws-mac-update-*`; сохраняется последняя исправная копия.
+
+`appearance`: `auto` — оформление macOS, `light` — светлая тема, `dark` — тёмная. Язык и тему можно изменить в форме настроек.

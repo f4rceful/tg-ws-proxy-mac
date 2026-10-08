@@ -84,7 +84,7 @@ class ProxyServiceTests(unittest.TestCase):
         self.assertIsNone(service.restart(config))
 
 class NativeWindowTests(unittest.TestCase):
-    def test_original_menu_and_stepwise_settings_with_glass_fallback(self):
+    def test_original_menu_and_complete_settings_form_with_glass_fallback(self):
         import AppKit as A
         from native_ui import NativeUI
         import native_ui
@@ -103,28 +103,27 @@ class NativeWindowTests(unittest.TestCase):
                 self.assertEqual(list(ui.menu_items), ['telegram', 'copy', 'restart', 'settings', 'logs', 'release', 'update', 'check', 'updates', 'version', 'quit'])
                 self.assertEqual(ui.menu_items['telegram'].title(), 'Открыть в Telegram (127.0.0.1:1443)')
                 ui.settings_(None)
-                self.assertEqual(ui.step_field.stringValue(), config['host'])
-                self.assertEqual(ui.next_button.bezelStyle(), A.NSBezelStyleGlass if glass else A.NSBezelStyleRounded)
-                ui.nextStep_(None)
-                ui.step_field.setStringValue_('70000')
-                ui.nextStep_(None)
-                self.assertEqual(ui.step_index, 1)
+                self.assertEqual(ui.fields['host'].stringValue(), config['host'])
+                self.assertEqual(ui.fields['port'].stringValue(), str(config['port']))
+                self.assertEqual(ui.fields['secret'].stringValue(), config['secret'])
+                self.assertEqual(ui.fields['dc_ip'].string(), '\n'.join(config['dc_ip']))
+                self.assertEqual(set(ui.fields), set(config) - {'autostart'})
+                self.assertTrue(ui.settings_scroll.hasVerticalScroller())
+                self.assertGreater(ui.form.frame().size.height, ui.settings_scroll.frame().size.height)
+                self.assertEqual(ui.save_button.bezelStyle(), A.NSBezelStyleGlass if glass else A.NSBezelStyleRounded)
+                ui.fields['port'].setStringValue_('70000')
+                ui.saveSettings_(None)
                 self.assertIn('65535', ui.error_label.stringValue())
                 self.assertFalse(saved)
-                ui.step_field.setStringValue_('2443')
-                ui.nextStep_(None)
-                # Cancelling after editing must leave the live config untouched.
+                ui.fields['port'].setStringValue_('2443')
+                # Cancelling must leave every live setting untouched.
                 ui.closeSettings_(None)
                 self.assertEqual(ui.config, config)
                 self.assertFalse(saved)
                 ui.settings_(None)
-                for key, _ in ui.STEPS:
-                    if key in ('verbose', 'cfproxy'):
-                        ui._advance(config[key])
-                    else:
-                        if key == 'port':
-                            ui.step_field.setStringValue_('2443')
-                        ui.nextStep_(None)
+                self.assertEqual(ui.fields['port'].stringValue(), str(config['port']))
+                ui.fields['port'].setStringValue_('2443')
+                ui.saveSettings_(None)
                 self.assertEqual(len(saved), 1)
                 self.assertEqual(saved[0]['port'], 2443)
                 self.assertEqual(ui.config, config)
@@ -183,21 +182,22 @@ class NativeWindowTests(unittest.TestCase):
             self.assertTrue(ui.menu_items['update'].isHidden())
             self.assertTrue(ui.status_item.button().image().isTemplate())
             ui.settings_(None)
-            ui.step_field.setStringValue_('127.0.0.2')
+            ui.fields['host'].setStringValue_('127.0.0.2')
             ui.update_status({'has_update': True, 'latest': '0.4.0'})
             self.assertFalse(ui.menu_items['update'].isHidden())
-            self.assertEqual(ui.step_field.stringValue(), '127.0.0.2')
-            surface = ui.windows['settings'].contentView()
-            content = surface.contentView() if hasattr(surface, 'contentView') else surface
-            buttons = [view.title() for view in content.subviews() if isinstance(view, A.NSButton)]
-            self.assertIn('Обновить до 0.4.0', buttons)
-            ui.step_index = len(ui.steps) - 1
-            ui._render_step()
-            self.assertEqual(ui.steps[ui.step_index][0], 'autostart')
+            self.assertEqual(ui.fields['host'].stringValue(), '127.0.0.2')
+            self.assertEqual(ui.form_update_button.title(), 'Обновить до 0.4.0')
+            self.assertFalse(ui.form_update_button.isHidden())
+            self.assertIn('autostart', ui.fields)
             self.assertFalse(saved)
-            ui.answerYes_(None)
+            ui.fields['autostart'].setState_(A.NSControlStateValueOn)
+            ui.fields['language'].selectItemAtIndex_(2)
+            ui.fields['appearance'].selectItemAtIndex_(2)
+            ui.saveSettings_(None)
             self.assertEqual(len(saved), 1)
             self.assertTrue(saved[0]['autostart'])
+            self.assertEqual(saved[0]['language'], 'en')
+            self.assertEqual(saved[0]['appearance'], 'dark')
             self.assertFalse(config['autostart'])
             ui.show_update_progress()
             self.assertFalse(ui.menu_items['restart'].isEnabled())

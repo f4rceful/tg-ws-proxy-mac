@@ -6,13 +6,13 @@ A macOS-only fork of [Flowseal/tg-ws-proxy](https://github.com/Flowseal/tg-ws-pr
 2. Launch it and choose **Open in Telegram (127.0.0.1:1443)** from the menu bar.
 3. Confirm the proxy in Telegram Desktop.
 
-The application runs in the menu bar. **Copy link**, **Restart proxy**, **Settings...** and **Open logs** retain their original workflows. Settings use compact, sequential native dialogs; **Close** discards unsaved changes. At the end, the application asks whether to restart the proxy.
+The application runs in the menu bar. **Copy link**, **Restart proxy**, **Settings...** and **Open logs** retain their original workflows. Settings use a single native form with sections and scrolling. **Cancel** discards unsaved changes; **Save** stores them and asks whether to restart the proxy. All connection, Cloudflare, logging and performance options are available in the form. Language and appearance can be selected in the Interface section.
 
 Windows and buttons use Liquid Glass on macOS 26 and later, with standard translucent AppKit controls on macOS 11–15. The menu bar icon adapts to light and dark appearances. The UI supports Russian and English and follows the macOS language by default.
 
 ## Login startup
 
-The final settings dialog in a packaged application enables startup at macOS login using a per-user LaunchAgent. Install the application in a permanent folder first. After moving it, enable startup again. This option is hidden when running from source.
+The macOS login section in settings in a packaged application enables startup at macOS login using a per-user LaunchAgent. Install the application in a permanent folder first. After moving it, enable startup again. This option is hidden when running from source.
 
 ## Updates and recovery
 
